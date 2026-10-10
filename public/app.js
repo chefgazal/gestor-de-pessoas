@@ -783,53 +783,61 @@ function extraForm(id, date) {
   }
 
   /* ----- escalar: marca os dias da semana; o ponto é feito no dia, pelo check-in ----- */
+  const quemMulti = `<div class="f"><label>Quem <small style="font-weight:500;color:var(--ink-2)">(marque uma ou mais pessoas)</small></label>
+    <div class="row" style="justify-content:space-between;margin-bottom:8px"><span class="hint" id="x-np" style="margin:0"></span><button class="btn sm" type="button" id="x-all">Marcar todos</button></div>
+    <div class="opts" id="x-ps" style="max-height:230px;overflow:auto">${lst.map(p => `<label class="opt"><input type="checkbox" value="${p.id}"><div><b>${esc(p.nome)}</b><span>${TIPOS[p.tipo]}${p.funcao ? ' · ' + esc(p.funcao) : ''}</span></div></label>`).join('')}</div></div>`;
   let ws = weekStartOf(x.data);
   const sel = new Set([dowMon(x.data)]);
   const jaTem = (sid, d) => Object.values(S.extras).some(e => e.staffId === sid && e.data === d);
-  openSheet(`<h3>Escalar extra</h3>${quem}
+  openSheet(`<h3>Escalar extra</h3>${quemMulti}
     <div class="f"><label>Dias da semana</label>
       <div class="row" style="justify-content:space-between;margin-bottom:8px"><button class="btn sm" type="button" id="x-prev" aria-label="Semana anterior">‹</button><b id="x-sem"></b><button class="btn sm" type="button" id="x-next" aria-label="Próxima semana">›</button></div>
       <div class="dias" id="x-dias"></div>
-      <span class="hint">Marque os dias em que a pessoa vai trabalhar. No dia, é só fazer o check-in. Dias já escalados aparecem marcados e travados.</span></div>
+      <span class="hint">Marque os dias em que as pessoas vão trabalhar. No dia, é só fazer o check-in. Dias em que todas as marcadas já estão escaladas aparecem travados; quem já tem o dia não é duplicado.</span></div>
     <label class="opt" style="margin-bottom:12px"><input type="checkbox" id="x-rep"><div><b>Repetir nas semanas seguintes do mês</b><span>Escala os mesmos dias da semana até o fim do mês.</span></div></label>
     ${horas}
     <div id="x-fer"></div>
     <div class="acts"><button class="btn" id="x-x">Cancelar</button><button class="btn primary" id="x-ok">Escalar</button></div>`,
   r => {
-    const sid = () => val(r, 'x-p');
-    const datas = () => {            // todas as datas que serão criadas
+    const sids = () => $$('#x-ps input:checked', r).map(c => c.value);
+    const pares = () => {            // todas as escalas que serão criadas: [pessoa, data]
       const out = [], rep = $('#x-rep', r).checked;
-      [...sel].forEach(i => {
+      sids().forEach(sid => [...sel].forEach(i => {
         let d = addDays(ws, i); const mes = d.slice(0, 7);
-        do { if (!jaTem(sid(), d)) out.push(d); d = addDays(d, 7); } while (rep && d.startsWith(mes));
-      });
-      return out.sort();
+        do { if (!jaTem(sid, d)) out.push([sid, d]); d = addDays(d, 7); } while (rep && d.startsWith(mes));
+      }));
+      return out;
     };
     const resumo = () => {
-      const ds = datas(), fer = ds.filter(d => holidayName(d));
-      $('#x-ok', r).textContent = ds.length ? `Escalar ${ds.length} ${ds.length > 1 ? 'dias' : 'dia'}` : 'Escalar';
+      const ps = sids(), pr = pares(), ds = [...new Set(pr.map(q => q[1]))].sort(), fer = ds.filter(d => holidayName(d));
+      $('#x-np', r).textContent = ps.length ? `${ps.length} ${ps.length > 1 ? 'pessoas marcadas' : 'pessoa marcada'}` : 'Nenhuma pessoa marcada';
+      $('#x-all', r).textContent = ps.length === lst.length ? 'Limpar' : 'Marcar todos';
+      $('#x-ok', r).textContent = !pr.length ? 'Escalar' : (ps.length > 1 ? `Escalar ${ps.length} pessoas · ${ds.length} ${ds.length > 1 ? 'dias' : 'dia'}` : `Escalar ${ds.length} ${ds.length > 1 ? 'dias' : 'dia'}`);
       $('#x-fer', r).innerHTML = fer.length ? `<div class="banner feriado">Feriado em ${fer.map(d => `${dm(d)} (${esc(holidayName(d))})`).join(', ')}. O adicional de feriado entra no relatório.</div>` : '';
     };
     const chips = () => {
       $('#x-sem', r).textContent = `${dm(ws)} a ${dm(addDays(ws, 6))}`;
+      const ps = sids();
       $('#x-dias', r).innerHTML = DIAS.map((n, i) => {
-        const d = addDays(ws, i), ja = jaTem(sid(), d), fer = holidayName(d);
-        return `<label class="dia ${ja ? 'ja' : ''} ${fer ? 'fer' : ''}" title="${ja ? 'Já escalado' : (fer ? esc(fer) : DIAS_L[i])}"><input type="checkbox" value="${i}" aria-label="${DIAS_L[i]} ${dm(d)}" ${ja || sel.has(i) ? 'checked' : ''} ${ja ? 'disabled' : ''}><span>${n}<small>${dm(d)}</small></span></label>`;
+        const d = addDays(ws, i), ja = ps.length > 0 && ps.every(q => jaTem(q, d)), parc = !ja && ps.some(q => jaTem(q, d)), fer = holidayName(d);
+        return `<label class="dia ${ja ? 'ja' : ''} ${fer ? 'fer' : ''}" title="${ja ? 'Já escalado' : (parc ? 'Algumas pessoas marcadas já estão escaladas neste dia' : (fer ? esc(fer) : DIAS_L[i]))}"><input type="checkbox" value="${i}" aria-label="${DIAS_L[i]} ${dm(d)}" ${ja || sel.has(i) ? 'checked' : ''} ${ja ? 'disabled' : ''}><span>${n}<small>${dm(d)}</small></span></label>`;
       }).join('');
       $$('#x-dias input', r).forEach(c => c.onchange = () => { c.checked ? sel.add(+c.value) : sel.delete(+c.value); resumo(); });
       resumo();
     };
-    $('#x-p', r).onchange = chips;
+    $$('#x-ps input', r).forEach(c => c.onchange = chips);
+    $('#x-all', r).onclick = () => { const todos = sids().length === lst.length; $$('#x-ps input', r).forEach(c => { c.checked = !todos; }); chips(); };
     $('#x-rep', r).onchange = resumo;
     $('#x-prev', r).onclick = () => { ws = addDays(ws, -7); chips(); };
     $('#x-next', r).onclick = () => { ws = addDays(ws, 7); chips(); };
     $('#x-x', r).onclick = closeSheet;
     $('#x-ok', r).onclick = async () => {
-      const ini = val(r, 'x-i'), fim = val(r, 'x-f'), obs = val(r, 'x-o'), ds = datas();
+      const ini = val(r, 'x-i'), fim = val(r, 'x-f'), obs = val(r, 'x-o'), ps = sids(), pr = pares();
+      if (!ps.length) { toast('Marque pelo menos uma pessoa.'); return; }
       if (!ini || !fim) { toast('Preencha os horários.'); return; }
-      if (!ds.length) { toast('Marque pelo menos um dia que ainda não esteja escalado.'); return; }
-      for (const d of ds) await put('extras', uid('x_'), { staffId: sid(), data: d, ini, fim, obs });
-      closeSheet(); toast(ds.length > 1 ? `${ds.length} dias escalados.` : 'Extra escalado.');
+      if (!pr.length) { toast('Marque pelo menos um dia que ainda não esteja escalado.'); return; }
+      for (const [sid, d] of pr) await put('extras', uid('x_'), { staffId: sid, data: d, ini, fim, obs });
+      closeSheet(); toast(ps.length > 1 ? `${ps.length} pessoas escaladas (${pr.length} escalas).` : (pr.length > 1 ? `${pr.length} dias escalados.` : 'Extra escalado.'));
     };
     chips();
   });

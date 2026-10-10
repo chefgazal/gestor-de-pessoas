@@ -1,9 +1,23 @@
 export const metadata = {
   title: 'Gestão de Escalas',
-  description: 'Escala de colaboradores fixos, extras, diaristas e intermitentes.'
+  description: 'Escala de colaboradores fixos, extras, diaristas e intermitentes.',
+  manifest: '/manifest.webmanifest',
+  icons: {
+    icon: [
+      { url: '/favicon-32.png', sizes: '32x32', type: 'image/png' },
+      { url: '/icon-192.png', sizes: '192x192', type: 'image/png' }
+    ],
+    apple: [{ url: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' }]
+  },
+  appleWebApp: { capable: true, title: 'Escalas', statusBarStyle: 'default' }
 };
 
-export const viewport = { width: 'device-width', initialScale: 1, viewportFit: 'cover' };
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
+  themeColor: '#1c6bd0'
+};
 
 export default function RootLayout({ children }) {
   return (

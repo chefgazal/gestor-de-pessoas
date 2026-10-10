@@ -757,24 +757,81 @@ function extraForm(id, date) {
   const lst = extrasStaff();
   if (!lst.length) { toast('Cadastre um diarista ou intermitente primeiro.'); return; }
   const x = id ? S.extras[id] : { data: date || todayISO(), staffId: lst[0].id, ini: '08:00', fim: '17:00' };
-  openSheet(`<h3>${id ? 'Editar extra' : 'Escalar extra'}</h3>
-    <div class="f"><label for="x-p">Quem</label><select id="x-p">${lst.map(p => `<option value="${p.id}" ${p.id === x.staffId ? 'selected' : ''}>${esc(p.nome)} · ${TIPOS[p.tipo]}${p.funcao ? ' · ' + esc(p.funcao) : ''}</option>`).join('')}</select></div>
-    <div class="f"><label for="x-d">Data</label><input id="x-d" type="date" value="${x.data}"></div>
-    <div class="f2"><div class="f"><label for="x-i">Entrada</label><input id="x-i" type="time" value="${x.ini}"></div>
+  const quem = `<div class="f"><label for="x-p">Quem</label><select id="x-p">${lst.map(p => `<option value="${p.id}" ${p.id === x.staffId ? 'selected' : ''}>${esc(p.nome)} · ${TIPOS[p.tipo]}${p.funcao ? ' · ' + esc(p.funcao) : ''}</option>`).join('')}</select></div>`;
+  const horas = `<div class="f2"><div class="f"><label for="x-i">Entrada</label><input id="x-i" type="time" value="${x.ini}"></div>
     <div class="f"><label for="x-f">Saída</label><input id="x-f" type="time" value="${x.fim}"></div></div>
-    <div class="f"><label for="x-o">Observação</label><input id="x-o" value="${esc(x.obs || '')}" placeholder="Ex.: evento, cobrir folga"></div>
+    <div class="f"><label for="x-o">Observação</label><input id="x-o" value="${esc(x.obs || '')}" placeholder="Ex.: evento, cobrir folga"></div>`;
+
+  /* ----- editar um extra já escalado: um dia só ----- */
+  if (id) {
+    openSheet(`<h3>Editar extra</h3>${quem}
+      <div class="f"><label for="x-d">Data</label><input id="x-d" type="date" value="${x.data}"></div>${horas}
+      <div id="x-fer"></div>
+      <div class="acts"><button class="btn danger sp" id="x-del">Excluir</button><button class="btn" id="x-x">Cancelar</button><button class="btn primary" id="x-ok">Salvar</button></div>`,
+    r => {
+      const fer = () => { const n = holidayName($('#x-d', r).value); $('#x-fer', r).innerHTML = n ? `<div class="banner feriado">Feriado: ${esc(n)}. O adicional de feriado entra no relatório.</div>` : ''; };
+      $('#x-d', r).onchange = fer; fer();
+      $('#x-x', r).onclick = closeSheet;
+      $('#x-ok', r).onclick = () => {
+        const o = Object.assign({}, x, { staffId: val(r, 'x-p'), data: val(r, 'x-d'), ini: val(r, 'x-i'), fim: val(r, 'x-f'), obs: val(r, 'x-o') });
+        if (!o.data || !o.ini || !o.fim) { toast('Preencha data e horários.'); return; }
+        put('extras', id, o); closeSheet(); toast('Extra salvo.');
+      };
+      $('#x-del', r).onclick = () => { drop('extras', id); closeSheet(); toast('Extra excluído.'); };
+    });
+    return;
+  }
+
+  /* ----- escalar: marca os dias da semana; o ponto é feito no dia, pelo check-in ----- */
+  let ws = weekStartOf(x.data);
+  const sel = new Set([dowMon(x.data)]);
+  const jaTem = (sid, d) => Object.values(S.extras).some(e => e.staffId === sid && e.data === d);
+  openSheet(`<h3>Escalar extra</h3>${quem}
+    <div class="f"><label>Dias da semana</label>
+      <div class="row" style="justify-content:space-between;margin-bottom:8px"><button class="btn sm" type="button" id="x-prev" aria-label="Semana anterior">‹</button><b id="x-sem"></b><button class="btn sm" type="button" id="x-next" aria-label="Próxima semana">›</button></div>
+      <div class="dias" id="x-dias"></div>
+      <span class="hint">Marque os dias em que a pessoa vai trabalhar. No dia, é só fazer o check-in. Dias já escalados aparecem marcados e travados.</span></div>
+    <label class="opt" style="margin-bottom:12px"><input type="checkbox" id="x-rep"><div><b>Repetir nas semanas seguintes do mês</b><span>Escala os mesmos dias da semana até o fim do mês.</span></div></label>
+    ${horas}
     <div id="x-fer"></div>
-    <div class="acts">${id ? '<button class="btn danger sp" id="x-del">Excluir</button>' : ''}<button class="btn" id="x-x">Cancelar</button><button class="btn primary" id="x-ok">Salvar</button></div>`,
+    <div class="acts"><button class="btn" id="x-x">Cancelar</button><button class="btn primary" id="x-ok">Escalar</button></div>`,
   r => {
-    const fer = () => { const n = holidayName($('#x-d', r).value); $('#x-fer', r).innerHTML = n ? `<div class="banner feriado">Feriado: ${esc(n)}. O adicional de feriado entra no relatório.</div>` : ''; };
-    $('#x-d', r).onchange = fer; fer();
-    $('#x-x', r).onclick = closeSheet;
-    $('#x-ok', r).onclick = () => {
-      const o = Object.assign({}, x, { staffId: val(r, 'x-p'), data: val(r, 'x-d'), ini: val(r, 'x-i'), fim: val(r, 'x-f'), obs: val(r, 'x-o') });
-      if (!o.data || !o.ini || !o.fim) { toast('Preencha data e horários.'); return; }
-      put('extras', id || uid('x_'), o); closeSheet(); toast('Extra salvo.');
+    const sid = () => val(r, 'x-p');
+    const datas = () => {            // todas as datas que serão criadas
+      const out = [], rep = $('#x-rep', r).checked;
+      [...sel].forEach(i => {
+        let d = addDays(ws, i); const mes = d.slice(0, 7);
+        do { if (!jaTem(sid(), d)) out.push(d); d = addDays(d, 7); } while (rep && d.startsWith(mes));
+      });
+      return out.sort();
     };
-    const del = $('#x-del', r); if (del) del.onclick = () => { drop('extras', id); closeSheet(); toast('Extra excluído.'); };
+    const resumo = () => {
+      const ds = datas(), fer = ds.filter(d => holidayName(d));
+      $('#x-ok', r).textContent = ds.length ? `Escalar ${ds.length} ${ds.length > 1 ? 'dias' : 'dia'}` : 'Escalar';
+      $('#x-fer', r).innerHTML = fer.length ? `<div class="banner feriado">Feriado em ${fer.map(d => `${dm(d)} (${esc(holidayName(d))})`).join(', ')}. O adicional de feriado entra no relatório.</div>` : '';
+    };
+    const chips = () => {
+      $('#x-sem', r).textContent = `${dm(ws)} a ${dm(addDays(ws, 6))}`;
+      $('#x-dias', r).innerHTML = DIAS.map((n, i) => {
+        const d = addDays(ws, i), ja = jaTem(sid(), d), fer = holidayName(d);
+        return `<label class="dia ${ja ? 'ja' : ''} ${fer ? 'fer' : ''}" title="${ja ? 'Já escalado' : (fer ? esc(fer) : DIAS_L[i])}"><input type="checkbox" value="${i}" aria-label="${DIAS_L[i]} ${dm(d)}" ${ja || sel.has(i) ? 'checked' : ''} ${ja ? 'disabled' : ''}><span>${n}<small>${dm(d)}</small></span></label>`;
+      }).join('');
+      $$('#x-dias input', r).forEach(c => c.onchange = () => { c.checked ? sel.add(+c.value) : sel.delete(+c.value); resumo(); });
+      resumo();
+    };
+    $('#x-p', r).onchange = chips;
+    $('#x-rep', r).onchange = resumo;
+    $('#x-prev', r).onclick = () => { ws = addDays(ws, -7); chips(); };
+    $('#x-next', r).onclick = () => { ws = addDays(ws, 7); chips(); };
+    $('#x-x', r).onclick = closeSheet;
+    $('#x-ok', r).onclick = async () => {
+      const ini = val(r, 'x-i'), fim = val(r, 'x-f'), obs = val(r, 'x-o'), ds = datas();
+      if (!ini || !fim) { toast('Preencha os horários.'); return; }
+      if (!ds.length) { toast('Marque pelo menos um dia que ainda não esteja escalado.'); return; }
+      for (const d of ds) await put('extras', uid('x_'), { staffId: sid(), data: d, ini, fim, obs });
+      closeSheet(); toast(ds.length > 1 ? `${ds.length} dias escalados.` : 'Extra escalado.');
+    };
+    chips();
   });
 }
 

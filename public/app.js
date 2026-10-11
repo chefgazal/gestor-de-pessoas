@@ -337,7 +337,7 @@ const relExtras = () => {
     <div class="bar" style="margin-top:0"><div class="seg" role="group" aria-label="Base de contagem">
       <button data-base="escalados" aria-pressed="${base === 'escalados'}">Dias escalados</button>
       <button data-base="checkin" aria-pressed="${base === 'checkin'}">Check-ins feitos</button></div>
-      <div class="row"><button class="btn sm" data-act="csv">Baixar CSV</button><button class="btn sm" data-act="config">Feriados e adicional</button></div></div>`;
+      <div class="row"><button class="btn sm" data-act="config">Feriados e adicional</button></div></div>`;
   if (fer.length) h += `<div class="banner feriado">Feriados em ${MESES[m - 1]}: ${fer.map(([d, n]) => `${dm(d)} ${esc(n)}`).join(' · ')}</div>`;
   if (!rows.length) return h + empty('Sem movimento neste mês', 'Quando houver extras escalados ou check-ins, os dias e o valor a receber aparecem aqui.');
   h += `<div class="scroll"><table class="rep"><thead><tr><th>Nome</th><th>Tipo</th><th>Diária</th><th>Escalados</th><th>Check-ins</th><th>Horas</th><th>Em feriado</th><th>A receber</th></tr></thead><tbody>` +
@@ -427,10 +427,11 @@ function detalhesFeriados(sid) {
     <div class="acts"><button class="btn" id="fd-x">Fechar</button></div>`, m => { $('#fd-x', m).onclick = closeSheet; });
 }
 
-V.relatorio = () => `<div class="seg" role="group" aria-label="Tipo de relatório" style="margin-bottom:14px">
+V.relatorio = () => `<div class="bar" style="margin-bottom:14px"><div class="seg" role="group" aria-label="Tipo de relatório">
   <button data-rel="extras" aria-pressed="${!['feriados', 'faltas'].includes(S.ui.relTab)}">Extras</button>
   <button data-rel="feriados" aria-pressed="${S.ui.relTab === 'feriados'}">Feriados</button>
-  <button data-rel="faltas" aria-pressed="${S.ui.relTab === 'faltas'}">Faltas</button></div>` +
+  <button data-rel="faltas" aria-pressed="${S.ui.relTab === 'faltas'}">Faltas</button></div>
+  <button class="btn sm primary" data-act="export">Exportar relatório</button></div>` +
   (S.ui.relTab === 'feriados' ? relFeriados() : S.ui.relTab === 'faltas' ? relFaltas() : relExtras());
 
 /* ---------- dar baixa / desfazer (d = data do feriado; null = contra o saldo anterior) ---------- */
@@ -638,6 +639,112 @@ function faltaForm(id) {
     if (del) del.onclick = () => { drop('faltas', id); closeSheet(); toast('Falta excluída.'); };
   });
 }
+
+/* ===== Relatório: exportar com filtros (período, vínculo e o que incluir) ===== */
+const monthBounds = mes => { const [y, m] = mes.split('-').map(Number); return [`${mes}-01`, iso(new Date(y, m, 0))]; };
+
+/* Monta as colunas e as linhas do relatório conforme os filtros.
+   o = { de, ate, tipos: ['fixo', ...], dias, fer, falt, base: 'escalados' | 'checkin' } */
+function buildExport(o) {
+  const hoje = todayISO(), adic = (S.config.adicionalFeriado ?? 100) / 100, ordemTipo = ['fixo', 'diarista', 'intermitente'];
+  const faltasDe = {};
+  Object.values(S.faltas).forEach(f => { if (f.data >= o.de && f.data <= o.ate && S.staff[f.staffId]) (faltasDe[f.staffId] = faltasDe[f.staffId] || []).push(f); });
+  const banco = {}; if (o.fer) bancoFeriados().forEach(r => { banco[r.p.id] = r.saldo; });
+  const recs = [];
+  Object.values(S.staff).filter(p => !p.vaga && o.tipos.includes(p.tipo))
+    .sort((a, b) => ordemTipo.indexOf(a.tipo) - ordemTipo.indexOf(b.tipo) || byOrdem(a, b)).forEach(p => {
+      const fl = (faltasDe[p.id] || []).slice().sort((a, b) => a.data.localeCompare(b.data)), faltaDias = new Set(fl.map(f => f.data));
+      let dias = [], horas = 0;
+      if (p.tipo === 'fixo') {                                    // dias de escala até hoje, sem os dias de falta
+        const fim = o.ate < hoje ? o.ate : hoje;
+        for (let d = o.de; d <= fim; d = addDays(d, 1)) { const s = shiftFor(p, d); if (s.ini && !faltaDias.has(d)) { dias.push(d); horas += hrs(s.ini, s.fim); } }
+      } else if (o.base === 'checkin') {                          // check-ins feitos
+        Object.values(S.checkins).filter(c => c.staffId === p.id && c.data >= o.de && c.data <= o.ate)
+          .forEach(c => { dias.push(c.data); horas += c.saida ? hrs(c.entrada, c.saida) : 0; });
+      } else {                                                    // dias escalados, sem os dias de falta
+        const m = {};
+        Object.values(S.extras).filter(x => x.staffId === p.id && x.data >= o.de && x.data <= o.ate && !faltaDias.has(x.data))
+          .forEach(x => { m[x.data] = (m[x.data] || 0) + hrs(x.ini, x.fim); });
+        Object.keys(m).forEach(d => { dias.push(d); horas += m[d]; });
+      }
+      dias.sort();
+      const fer = dias.filter(d => holidayName(d)), diaria = p.diaria || 0;
+      const cnt = t => fl.filter(f => (f.tipo || 'injustificada') === t).length;
+      const ativo = p.ativo !== false || dias.length || fl.length;
+      if (!ativo) return;
+      recs.push({ p, dias, horas, fer, fl, inj: cnt('injustificada'), ate: cnt('atestado'), jus: cnt('justificada'),
+        valor: p.tipo === 'fixo' ? 0 : dias.length * diaria + fer.length * diaria * adic, saldo: p.tipo === 'fixo' ? banco[p.id] : undefined });
+    });
+
+  const cols = [
+    { h: 'Nome', f: r => r.p.nome }, { h: 'Setor', f: r => r.p.setor || '' }, { h: 'Função', f: r => r.p.funcao || '' }, { h: 'Vínculo', f: r => TIPOS[r.p.tipo] }];
+  if (o.dias) cols.push({ h: 'Dias trabalhados', num: 1, f: r => r.dias.length }, { h: 'Horas', num: 1, f: r => r.horas });
+  if (o.fer) cols.push({ h: 'Feriados trabalhados', num: 1, f: r => r.fer.length },
+    { h: 'Datas dos feriados', f: r => r.fer.map(d => `${dm(d)} ${holidayName(d)}`).join(', ') },
+    { h: 'Saldo atual do banco de feriados', num: 1, f: r => r.saldo });
+  if (o.falt) cols.push({ h: 'Faltas', num: 1, f: r => r.fl.length }, { h: 'Injustificadas', num: 1, f: r => r.inj },
+    { h: 'Atestados', num: 1, f: r => r.ate }, { h: 'Justificadas', num: 1, f: r => r.jus },
+    { h: 'Datas das faltas', f: r => r.fl.map(f => dm(f.data)).join(', ') });
+  if (o.dias && recs.some(r => r.p.tipo !== 'fixo')) cols.push({ h: 'Diária', f: r => r.p.tipo === 'fixo' ? undefined : (r.p.diaria || 0) },
+    { h: 'A receber', num: 1, f: r => r.p.tipo === 'fixo' ? undefined : r.valor });
+  return { cols, recs };
+}
+
+const exNum = v => typeof v !== 'number' ? (v ?? '') : String(Number.isInteger(v) ? v : v.toFixed(2)).replace('.', ',');
+
+function exportLinhas(o) {
+  const { cols, recs } = buildExport(o);
+  const linhas = recs.map(r => cols.map(c => exNum(c.f(r))));
+  const tot = cols.map((c, i) => i === 0 ? 'TOTAL' : c.num ? exNum(recs.reduce((s, r) => s + (+c.f(r) || 0), 0)) : '');
+  return { head: cols.map(c => c.h), linhas, tot, recs };
+}
+
+function exportForm() {
+  const [de0, ate0] = monthBounds(S.ui.mes);
+  const chk = (id, tit, sub, on = true) => `<label class="opt"><input type="checkbox" id="${id}" ${on ? 'checked' : ''}><div><b>${tit}</b><span>${sub}</span></div></label>`;
+  openSheet(`<h3>Exportar relatório</h3>
+    <div class="f2"><div class="f"><label for="ex-de">Data inicial</label><input id="ex-de" type="date" value="${de0}"></div>
+    <div class="f"><label for="ex-ate">Data final</label><input id="ex-ate" type="date" value="${ate0}"></div></div>
+    <div class="f"><span class="l">Vínculo</span><div class="opts">
+      ${['fixo', 'diarista', 'intermitente'].map(k => `<label class="opt"><input type="checkbox" name="ex-t" value="${k}" checked><div><b>${TIPOS[k]}</b></div></label>`).join('')}</div></div>
+    <div class="f"><span class="l">Incluir no relatório</span><div class="opts">
+      ${chk('ex-dias', 'Dias trabalhados', 'Dias e horas. Nos diaristas e intermitentes, também a diária e o valor a receber.')}
+      ${chk('ex-fer', 'Feriados', 'Feriados trabalhados no período e saldo atual do banco de feriados.')}
+      ${chk('ex-falt', 'Faltas', 'Quantidade por tipo e as datas.')}</div></div>
+    <div class="f" id="ex-base-f"><span class="l">Diaristas e intermitentes: contar por</span><div class="opts">
+      <label class="opt"><input type="radio" name="ex-b" value="escalados" ${S.ui.base !== 'checkin' ? 'checked' : ''}><div><b>Dias escalados</b></div></label>
+      <label class="opt"><input type="radio" name="ex-b" value="checkin" ${S.ui.base === 'checkin' ? 'checked' : ''}><div><b>Check-ins feitos</b></div></label></div></div>
+    <div id="ex-res" class="banner especial"></div>
+    <p class="hint">Fixos: contam os dias de escala até hoje. Dias com falta registrada não contam como trabalhados.</p>
+    <div class="acts"><button class="btn" id="ex-x">Cancelar</button><button class="btn primary" id="ex-ok">Baixar CSV</button></div>`,
+  r => {
+    const ler = () => ({ de: $('#ex-de', r).value, ate: $('#ex-ate', r).value, tipos: $$('input[name=ex-t]:checked', r).map(i => i.value),
+      dias: $('#ex-dias', r).checked, fer: $('#ex-fer', r).checked, falt: $('#ex-falt', r).checked, base: $('input[name=ex-b]:checked', r).value });
+    const erro = o => !o.de || !o.ate ? 'Informe a data inicial e a final.' : o.de > o.ate ? 'A data inicial é depois da final.'
+      : (parse(o.ate) - parse(o.de)) / 864e5 > 400 ? 'Escolha um período de até 400 dias.' : !o.tipos.length ? 'Marque pelo menos um vínculo.'
+      : !(o.dias || o.fer || o.falt) ? 'Marque pelo menos uma opção para incluir.' : '';
+    const resumo = () => {
+      const o = ler(), e = erro(o), box = $('#ex-res', r); $('#ex-ok', r).disabled = !!e;
+      $('#ex-base-f', r).hidden = !o.tipos.some(t => t !== 'fixo');
+      if (e) { box.textContent = e; return; }
+      const { recs } = buildExport(o), soma = f => recs.reduce((s, x) => s + f(x), 0);
+      box.textContent = `${recs.length} ${recs.length === 1 ? 'pessoa' : 'pessoas'}` + (o.dias ? ` · ${soma(x => x.dias.length)} ${soma(x => x.dias.length) === 1 ? 'dia trabalhado' : 'dias trabalhados'}` : '') + (o.fer ? ` · ${soma(x => x.fer.length)} em feriado` : '')
+        + (o.falt ? ` · ${soma(x => x.fl.length)} faltas` : '') + (o.dias && recs.some(x => x.p.tipo !== 'fixo') ? ` · ${brl(soma(x => x.valor))} a receber` : '');
+    };
+    $$('input', r).forEach(i => i.onchange = resumo);
+    $('#ex-x', r).onclick = closeSheet;
+    $('#ex-ok', r).onclick = async () => {
+      const o = ler(); if (erro(o)) return;
+      const { head, linhas, tot } = exportLinhas(o);
+      const csv = '﻿' + [head].concat(linhas, [tot]).map(l => l.map(c => `"${String(c).replace(/"/g, '""')}"`).join(';')).join('\r\n');
+      let dl = null; try { dl = await claude.use('downloads'); } catch (e) { }
+      if (!dl) { toast('O download não está disponível nesta visualização.'); return; }
+      try { await dl.save({ filename: `relatorio-${o.de}-a-${o.ate}.csv`, data: csv }); closeSheet(); toast('Relatório baixado.'); } catch (e) { toast('Download cancelado.'); }
+    };
+    resumo();
+  });
+}
+
 
 /* ===== Formulários: colaborador, horário, extras, configuração ===== */
 const val = (r, id) => { const e = $('#' + id, r); return e ? e.value.trim() : ''; };
@@ -1033,6 +1140,7 @@ document.addEventListener('click', e => {
   else if (a === 'repeat-month') repeatMonth();
   else if (a === 'config') configForm();
   else if (a === 'csv') exportCsv();
+  else if (a === 'export') exportForm();
   else if (a === 'hoje-fm') { S.ui.fdsMes = todayISO().slice(0, 7); render(); }
   else if (a === 'fds-bulk') fdsBulk(ds.id);
   else if (a === 'add-falta') faltaForm();

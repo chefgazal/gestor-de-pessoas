@@ -209,12 +209,13 @@ V.hoje = () => {
 };
 
 function extraRow(x, showDate) {
-  const p = S.staff[x.staffId], c = checkinOf(x.data, x.staffId);
-  const st = c ? (c.saida ? `<span class="chip ok">Saiu ${c.saida}</span>` : `<span class="chip ok">Entrou ${c.entrada}</span>`)
+  const p = S.staff[x.staffId], c = checkinOf(x.data, x.staffId), hoje = x.data === todayISO();
+  const st = c ? `<button class="chip ok" style="border:0;cursor:pointer" data-act="checkin" data-id="${p.id}" aria-label="Ver ou corrigir o check-in de ${esc(p.nome)}">${c.saida ? `Saiu ${c.saida}` : `Entrou ${c.entrada}`}</button>`
     : (x.data <= todayISO() ? `<span class="chip warn">Sem check-in</span>` : `<span class="chip mute">Agendado</span>`);
+  const acao = hoje && !(c && c.saida) ? `<button class="btn sm primary" data-act="quick-in" data-id="${p.id}">${c ? 'Saída' : 'Entrada'}</button>` : '';
   return `<div class="item"><div class="avatar">${esc(initials(p.nome))}</div>
     <div class="who"><b>${esc(p.nome)}</b><span>${TIPOS[p.tipo]} · ${esc(p.funcao || '')}${showDate === 'data' ? ' · ' + dm(x.data) : ''}${x.obs ? ' · ' + esc(x.obs) : ''}</span></div>
-    <div style="text-align:right"><div class="time">${x.ini}–${x.fim}</div>${st}</div>
+    <div style="text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:5px"><div class="time">${x.ini}–${x.fim}</div>${st}${acao}</div>
     <button class="btn sm ghost" data-act="edit-extra" data-id="${x.id}" aria-label="Editar">✎</button></div>`;
 }
 
@@ -1045,6 +1046,15 @@ async function thumb(file) {
   c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
   return c.toDataURL('image/jpeg', .6);
 }
+/* check-in com um toque: entrada ou saída agora, ponto eletrônico. Quem tem código usa o formulário completo. */
+function quickCheckin(sid) {
+  const p = S.staff[sid], d = todayISO(); if (!p) return;
+  const c = checkinOf(d, sid);
+  if (c && c.saida) { toast(`${p.nome.split(' ')[0]} já concluiu o dia.`); return; }
+  if (p.pin) { checkinForm(sid); return; }
+  const t = nowHM(), o = c ? Object.assign({}, c, { saida: t, metodoSaida: 'ponto' }) : { staffId: sid, data: d, entrada: t, metodo: 'ponto' };
+  put('checkins', `${d}_${sid}`, o); toast(`${c ? 'Saída' : 'Entrada'} de ${p.nome.split(' ')[0]} registrada às ${t}.`);
+}
 function checkinForm(pref) {
   const d = todayISO(), lst = extrasStaff();
   if (!lst.length) { toast('Cadastre um diarista ou intermitente primeiro.'); return; }
@@ -1134,7 +1144,8 @@ document.addEventListener('click', e => {
   else if (a === 'cell') cellForm(ds.id, +ds.i, ds.d);
   else if (a === 'add-extra') extraForm(null, ds.d);
   else if (a === 'edit-extra') extraForm(ds.id);
-  else if (a === 'checkin') checkinForm();
+  else if (a === 'checkin') checkinForm(ds.id);
+  else if (a === 'quick-in') quickCheckin(ds.id);
   else if (a === 'wa-one') waOne(ds.id);
   else if (a === 'wa-todos') waTodos();
   else if (a === 'repeat-month') repeatMonth();

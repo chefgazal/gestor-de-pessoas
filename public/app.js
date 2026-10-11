@@ -214,7 +214,7 @@ function extraRow(x, showDate) {
     : (x.data <= todayISO() ? `<span class="chip warn">Sem check-in</span>` : `<span class="chip mute">Agendado</span>`);
   const acao = hoje && !(c && c.saida) ? `<button class="btn sm primary" data-act="quick-in" data-id="${p.id}">${c ? 'Saída' : 'Entrada'}</button>` : '';
   return `<div class="item"><div class="avatar">${esc(initials(p.nome))}</div>
-    <div class="who"><b>${esc(p.nome)}</b><span>${TIPOS[p.tipo]} · ${esc(p.funcao || '')}${showDate === 'data' ? ' · ' + dm(x.data) : ''}${x.obs ? ' · ' + esc(x.obs) : ''}</span></div>
+    <div class="who"><b>${esc(p.nome)}</b><span>${TIPOS[p.tipo]} · ${esc(p.funcao || '')}${showDate === 'data' ? ' · ' + dm(x.data) : ''}${x.obs ? ' · ' + esc(x.obs) : ''}${pgTxt(x)}</span></div>
     <div style="text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:5px"><div class="time">${x.ini}–${x.fim}</div>${st}${acao}</div>
     <button class="btn sm ghost" data-act="edit-extra" data-id="${x.id}" aria-label="Editar">✎</button></div>`;
 }
@@ -274,9 +274,10 @@ V.escala = () => {
 
 /* ---------- EXTRAS ---------- */
 V.extras = () => {
+  if (S.ui.exView === 'pag') return pagamentosView();
   const ws = S.ui.week, f = S.ui.fExtras;
   const days = [0, 1, 2, 3, 4, 5, 6].map(i => addDays(ws, i));
-  let h = `<div class="bar"><h2>Escala de extras</h2><div class="seg" role="group" aria-label="Filtro">
+  let h = exSeg() + `<div class="bar"><h2>Escala de extras</h2><div class="seg" role="group" aria-label="Filtro">
     ${[['todos', 'Todos'], ['diarista', 'Diaristas'], ['intermitente', 'Intermitentes']].map(([k, l]) => `<button data-fex="${k}" aria-pressed="${f === k}">${l}</button>`).join('')}</div></div>
     <div class="bar" style="margin-top:0"><div class="row">${navD('sem', `${dm(days[0])} a ${dm(days[6])}`)}<button class="btn sm" data-act="hoje-w">Esta semana</button></div>
     <div class="row"><button class="btn sm" data-act="repeat-month">Manter para o próximo mês</button></div></div>`;
@@ -294,6 +295,113 @@ V.extras = () => {
   });
   return h + '</div>';
 };
+
+/* ---------- EXTRAS: PAGAMENTOS (situação de pagamento das diárias) ---------- */
+/* Cada extra pode ter  pg = { st: 'pago' | 'agendado', data, valor }.  Sem pg = pendente. */
+const exSeg = () => `<div class="seg" role="group" aria-label="Seção dos extras" style="margin-bottom:12px">
+  <button data-exv="escala" aria-pressed="${S.ui.exView !== 'pag'}">Escala</button>
+  <button data-exv="pag" aria-pressed="${S.ui.exView === 'pag'}">Pagamentos</button></div>`;
+const valorDia = x => { const p = S.staff[x.staffId] || {}, di = p.diaria || 0; return di + (holidayName(x.data) ? di * (S.config.adicionalFeriado ?? 100) / 100 : 0); };
+const temFalta = x => Object.values(S.faltas).some(f => f.staffId === x.staffId && f.data === x.data);
+/* situação de pagamento de um extra: pago | agend | pend | futuro (ainda não trabalhou) | falta (não paga) */
+function pgInfo(x) {
+  const hoje = todayISO();
+  if (x.pg && x.pg.st === 'pago') return { st: 'pago', data: x.pg.data, valor: x.pg.valor ?? valorDia(x) };
+  if (temFalta(x)) return { st: 'falta', valor: 0 };
+  const valor = valorDia(x);
+  if (x.pg && x.pg.st === 'agendado') return { st: 'agend', data: x.pg.data, valor, atrasado: !!x.pg.data && x.pg.data < hoje };
+  return { st: x.data > hoje ? 'futuro' : 'pend', valor };
+}
+const PG = { pend: ['warn', 'A pagar'], agend: ['mute', 'Agendado'], pago: ['ok', 'Pago'], futuro: ['mute', 'Ainda não trabalhou'], falta: ['red', 'Falta · sem pagamento'] };
+const pgTxt = x => !x.pg ? '' : x.pg.st === 'pago' ? ` · Pago${x.pg.data ? ' em ' + dm(x.pg.data) : ''}` : ` · Pgto agendado${x.pg.data ? ' p/ ' + dm(x.pg.data) : ''}`;
+
+function pagamentosView() {
+  const mes = S.ui.mes, [y, m] = mes.split('-').map(Number), f = S.ui.fPag || 'todos', por = {};
+  Object.values(S.extras).filter(x => x.data.startsWith(mes) && S.staff[x.staffId] && S.staff[x.staffId].tipo !== 'fixo').forEach(x => {
+    const g = por[x.staffId] = por[x.staffId] || { p: S.staff[x.staffId], l: [] }; g.l.push({ x, i: pgInfo(x) });
+  });
+  const grupos = Object.values(por).sort((a, b) => byOrdem(a.p, b.p));
+  const soma = st => grupos.reduce((s, g) => s + g.l.filter(q => q.i.st === st).reduce((t, q) => t + q.i.valor, 0), 0);
+  const cont = st => grupos.reduce((s, g) => s + g.l.filter(q => q.i.st === st).length, 0);
+  const mostrar = g => f === 'todos' || g.l.some(q => q.i.st === ({ pend: 'pend', agend: 'agend', pago: 'pago' })[f]);
+  let h = exSeg() + `<div class="bar"><h2>Pagamentos dos extras</h2>${navD('mes', `${MESES[m - 1]} ${y}`)}</div>
+    <div class="stats"><div class="stat"><b>${brl(soma('pend'))}</b><span>A pagar · ${cont('pend')} ${cont('pend') === 1 ? 'dia' : 'dias'}</span></div>
+    <div class="stat"><b>${brl(soma('agend'))}</b><span>Agendado · ${cont('agend')} ${cont('agend') === 1 ? 'dia' : 'dias'}</span></div>
+    <div class="stat"><b>${brl(soma('pago'))}</b><span>Pago · ${cont('pago')} ${cont('pago') === 1 ? 'dia' : 'dias'}</span></div></div>
+    <div class="seg" role="group" aria-label="Filtro de pagamento" style="margin-bottom:12px">
+    ${[['todos', 'Todos'], ['pend', 'A pagar'], ['agend', 'Agendados'], ['pago', 'Pagos']].map(([k, l]) => `<button data-pgf="${k}" aria-pressed="${f === k}">${l}</button>`).join('')}</div>`;
+  if (!grupos.length) return h + empty('Sem extras em ' + MESES[m - 1], 'Quando houver diaristas ou intermitentes escalados no mês, a situação de pagamento aparece aqui.');
+  const lista = grupos.filter(mostrar);
+  if (!lista.length) return h + empty('Nada nesta situação', 'Troque o filtro para ver os outros pagamentos do mês.');
+  h += `<section class="card"><div class="list">` + lista.map(g => {
+    const c = st => g.l.filter(q => q.i.st === st), pe = c('pend'), ag = c('agend'), pa = c('pago'), fu = c('futuro'), fa = c('falta'), val = a => a.reduce((s, q) => s + q.i.valor, 0);
+    const datas = [...new Set(ag.map(q => q.i.data).filter(Boolean))].sort().map(dm).join(', '), atras = ag.some(q => q.i.atrasado);
+    return `<div class="item"><div class="avatar">${esc(initials(g.p.nome))}</div>
+      <div class="who"><b>${esc(g.p.nome)}</b><span>${TIPOS[g.p.tipo]} · ${brl(g.p.diaria)} por diária · ${g.l.length} ${g.l.length === 1 ? 'dia' : 'dias'} no mês</span>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:5px">
+        ${pe.length ? `<span class="chip warn">${pe.length} a pagar · ${brl(val(pe))}</span>` : ''}
+        ${ag.length ? `<span class="chip ${atras ? 'red' : 'mute'}">${ag.length} agendado${ag.length > 1 ? 's' : ''}${datas ? ' p/ ' + datas : ''} · ${brl(val(ag))}${atras ? ' · atrasado' : ''}</span>` : ''}
+        ${pa.length ? `<span class="chip ok">${pa.length} ${pa.length > 1 ? 'pagos' : 'pago'} · ${brl(val(pa))}</span>` : ''}
+        ${fu.length ? `<span class="chip mute">${fu.length} a trabalhar</span>` : ''}${fa.length ? `<span class="chip red">${fa.length} falta${fa.length > 1 ? 's' : ''}</span>` : ''}</div></div>
+      <button class="btn sm ${pe.length ? 'primary' : ''}" data-act="pagar" data-id="${g.p.id}">Pagamento</button></div>`;
+  }).join('') + `</div></section>
+    <p class="hint" style="margin-top:10px">Valor do dia = diária + adicional de feriado (${S.config.adicionalFeriado ?? 100}%). Dias com falta registrada não são pagos.</p>`;
+  return h;
+}
+
+function pagForm(sid) {
+  const p = S.staff[sid], mes = S.ui.mes, hoje = todayISO();
+  const itens = Object.values(S.extras).filter(x => x.staffId === sid && x.data.startsWith(mes)).sort((a, b) => a.data.localeCompare(b.data) || (a.ini || '').localeCompare(b.ini || ''));
+  if (!p || !itens.length) { toast('Nenhum extra deste colaborador no mês.'); return; }
+  const padrao = itens.some(x => pgInfo(x).st === 'pend') ? 'pend' : 'agend';   // já vem marcado o que falta pagar (ou, se nada falta, o agendado)
+  const linha = x => {
+    const i = pgInfo(x), [cls, lbl] = PG[i.st], fer = holidayName(x.data);
+    const det = i.st === 'pago' ? `Pago${i.data ? ' em ' + dmy(i.data) : ''}` : i.st === 'agend' ? `Agendado${i.data ? ' para ' + dmy(i.data) : ''}${i.atrasado ? ' · atrasado' : ''}` : '';
+    return `<label class="opt" style="${i.st === 'falta' ? 'opacity:.6' : ''}"><input type="checkbox" name="pg-x" value="${x.id}" ${i.st === padrao ? 'checked' : ''} ${i.st === 'falta' ? 'disabled' : ''}>
+      <div style="flex:1"><b>${DIAS[dowMon(x.data)]} ${dm(x.data)} · ${x.ini}–${x.fim}</b><span>${[i.st === 'falta' ? 'Não é pago' : brl(i.valor) + (fer ? ' (feriado: ' + esc(fer) + ')' : ''), det].filter(Boolean).join(' · ')}</span></div>
+      <span class="chip ${cls}">${lbl}</span></label>`;
+  };
+  openSheet(`<h3>Pagamento · ${esc(p.nome)}</h3>
+    <p class="hint" style="margin:0 0 10px">${TIPOS[p.tipo]} · ${brl(p.diaria)} por diária</p>
+    <div class="row" style="justify-content:space-between;margin-bottom:8px"><span class="hint" style="margin:0">Marque os dias</span><button class="btn sm" type="button" id="pg-all">Marcar todos</button></div>
+    <div class="opts" style="max-height:260px;overflow:auto;margin-bottom:12px">${itens.map(linha).join('')}</div>
+    <div class="f"><span class="l">O que fazer com os dias marcados</span><div class="opts">
+      <label class="opt"><input type="radio" name="pg-a" value="pago" checked><div><b>Marcar como pago</b><span>Registra a data do pagamento e o valor.</span></div></label>
+      <label class="opt"><input type="radio" name="pg-a" value="agendado"><div><b>Agendar o pagamento</b><span>Escolha o dia em que vai pagar.</span></div></label>
+      <label class="opt"><input type="radio" name="pg-a" value="limpar"><div><b>Voltar para “a pagar”</b><span>Desfaz o pagamento ou o agendamento.</span></div></label></div></div>
+    <div class="f" id="pg-df"><label for="pg-d" id="pg-dl">Data do pagamento</label><input id="pg-d" type="date" value="${hoje}"></div>
+    <div id="pg-res" class="banner especial"></div>
+    <div class="acts"><button class="btn" id="pg-x">Fechar</button><button class="btn primary" id="pg-ok">Aplicar</button></div>`,
+  r => {
+    const sel = () => $$('input[name=pg-x]:checked', r).map(c => S.extras[c.value]).filter(Boolean), acao = () => $('input[name=pg-a]:checked', r).value;
+    const resumo = () => {
+      const l = sel(), a = acao(), tot = l.reduce((s, x) => s + valorDia(x), 0);
+      $('#pg-df', r).hidden = a === 'limpar';
+      $('#pg-dl', r).textContent = a === 'pago' ? 'Data do pagamento' : 'Pagar no dia';
+      $('#pg-res', r).textContent = l.length ? `${l.length} ${l.length > 1 ? 'dias marcados' : 'dia marcado'} · ${brl(tot)}` : 'Nenhum dia marcado.';
+      $('#pg-ok', r).disabled = !l.length;
+    };
+    $$('input', r).forEach(i => i.onchange = resumo);
+    $('#pg-all', r).onclick = () => {
+      const cs = $$('input[name=pg-x]:not(:disabled)', r), todos = cs.every(c => c.checked);
+      cs.forEach(c => c.checked = !todos); $('#pg-all', r).textContent = todos ? 'Marcar todos' : 'Limpar'; resumo();
+    };
+    $('#pg-x', r).onclick = closeSheet;
+    $('#pg-ok', r).onclick = async () => {
+      const l = sel(), a = acao(), d = $('#pg-d', r).value;
+      if (!l.length) return;
+      if (a !== 'limpar' && !d) { toast('Informe a data.'); return; }
+      for (const x of l) {
+        const o = Object.assign({}, x); delete o.pg;
+        if (a === 'pago') o.pg = { st: 'pago', data: d, valor: valorDia(x) };
+        else if (a === 'agendado') o.pg = { st: 'agendado', data: d };
+        await put('extras', x.id, o);
+      }
+      closeSheet(); toast(a === 'pago' ? `${l.length} ${l.length > 1 ? 'dias marcados' : 'dia marcado'} como pago.` : a === 'agendado' ? `Pagamento agendado para ${dm(d)}.` : 'Voltou para “a pagar”.');
+    };
+    resumo();
+  });
+}
 
 /* ---------- EQUIPE ---------- */
 V.equipe = () => {
@@ -874,15 +982,22 @@ function extraForm(id, date) {
   if (id) {
     openSheet(`<h3>Editar extra</h3>${quem}
       <div class="f"><label for="x-d">Data</label><input id="x-d" type="date" value="${x.data}"></div>${horas}
+      <div class="f2"><div class="f"><label for="x-pg">Pagamento</label><select id="x-pg"><option value="">A pagar</option><option value="agendado" ${x.pg && x.pg.st === 'agendado' ? 'selected' : ''}>Agendado</option><option value="pago" ${x.pg && x.pg.st === 'pago' ? 'selected' : ''}>Pago</option></select></div>
+      <div class="f" id="x-pgf" hidden><label for="x-pgd" id="x-pgl">Data</label><input id="x-pgd" type="date" value="${(x.pg && x.pg.data) || todayISO()}"></div></div>
       <div id="x-fer"></div>
       <div class="acts"><button class="btn danger sp" id="x-del">Excluir</button><button class="btn" id="x-x">Cancelar</button><button class="btn primary" id="x-ok">Salvar</button></div>`,
     r => {
       const fer = () => { const n = holidayName($('#x-d', r).value); $('#x-fer', r).innerHTML = n ? `<div class="banner feriado">Feriado: ${esc(n)}. O adicional de feriado entra no relatório.</div>` : ''; };
       $('#x-d', r).onchange = fer; fer();
+      const pgsync = () => { const v = $('#x-pg', r).value; $('#x-pgf', r).hidden = !v; $('#x-pgl', r).textContent = v === 'pago' ? 'Pago em' : 'Pagar no dia'; };
+      $('#x-pg', r).onchange = pgsync; pgsync();
       $('#x-x', r).onclick = closeSheet;
       $('#x-ok', r).onclick = () => {
         const o = Object.assign({}, x, { staffId: val(r, 'x-p'), data: val(r, 'x-d'), ini: val(r, 'x-i'), fim: val(r, 'x-f'), obs: val(r, 'x-o') });
         if (!o.data || !o.ini || !o.fim) { toast('Preencha data e horários.'); return; }
+        const pg = $('#x-pg', r).value, pgd = $('#x-pgd', r).value; delete o.pg;
+        if (pg && !pgd) { toast('Informe a data do pagamento.'); return; }
+        if (pg === 'pago') o.pg = { st: 'pago', data: pgd, valor: valorDia(o) }; else if (pg === 'agendado') o.pg = { st: 'agendado', data: pgd };
         put('extras', id, o); closeSheet(); toast('Extra salvo.');
       };
       $('#x-del', r).onclick = () => { drop('extras', id); closeSheet(); toast('Extra excluído.'); };
@@ -1132,6 +1247,8 @@ document.addEventListener('click', e => {
   }
   if (t.dataset.mode) { S.ui.gridMode = t.dataset.mode; render(); return; }
   if (t.dataset.fex) { S.ui.fExtras = t.dataset.fex; render(); return; }
+  if (t.dataset.exv) { S.ui.exView = t.dataset.exv; render(); return; }
+  if (t.dataset.pgf) { S.ui.fPag = t.dataset.pgf; render(); return; }
   if (t.dataset.feq) { S.ui.fEquipe = t.dataset.feq; render(); return; }
   if (t.dataset.base) { S.ui.base = t.dataset.base; render(); return; }
   if (t.dataset.rel) { S.ui.relTab = t.dataset.rel; render(); return; }
@@ -1146,6 +1263,7 @@ document.addEventListener('click', e => {
   else if (a === 'edit-extra') extraForm(ds.id);
   else if (a === 'checkin') checkinForm(ds.id);
   else if (a === 'quick-in') quickCheckin(ds.id);
+  else if (a === 'pagar') pagForm(ds.id);
   else if (a === 'wa-one') waOne(ds.id);
   else if (a === 'wa-todos') waTodos();
   else if (a === 'repeat-month') repeatMonth();
